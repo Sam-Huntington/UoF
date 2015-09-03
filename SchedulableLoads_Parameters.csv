@@ -1,5 +1,2 @@
-Parameter Name,Clothes Washer (CW),Clothes Dryer (CD),DishWasher (DW),Description
-pLoadTime_XX,6,6,14,time that the washing machine is loaded and ready to go
-pFinishTime_XX,12,12,22,time that the washing machine needs to be complete by
-pkWh_XX,4,5,2.5,total kwh required to complete task
-pMaxLoad_XX,2,5,2,max power draw
+pLoadTime_CW,pFinishTime_CW,pkWh_CW,pMaxLoad_CW,pLoadTime_CD,pFinishTime_CD,pkWh_CD,pMaxLoad_CD,pLoadTime_DW,pFinishTime_DW,pkWh_DW,pMaxLoad_DW
+6,12,4,2,6,12,5,5,14,22,2.5,2
