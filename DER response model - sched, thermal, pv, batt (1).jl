@@ -21,10 +21,11 @@ pBuyEnergy = iPrices[:pBuy_Energy][1:T]
 pSellEnergy = iPrices[:pSell_Energy][1:T]
 pNonControllableLoad = iGenLoad[:pNonControllableLoad][1:T]
 
+pCostCurtail = 1.50 #cost of curtailment - will depend on the power system ($/KWH)
 pNetworkPeakHour = 117
 pNetworkCostperkW = 30
+
 pDelta = 1 #duration of time period (hr)
-pCCurtail = 0.25 #cost of curtailment - will depend on the scenario ($/KWH)
 pGenAssets = [5 5 2.5 2.5] # this is where you specify the technology choices; will ultimately take this from dataframes
 #genAssets = [pPVbank pBatt_NominalE pBatt_DischargeCapacity pBatt_ChargeCapacity]
 #pGenAssets = [15 5 2.5 2.5]
@@ -178,7 +179,7 @@ end
 
 for t=1:T
     
-    @addConstraint(m, pNonControllableLoad[t]+vScheduledLoads[t]+vThermalLoad[t]+vBattCharge[t]==vPowerConsumed[t])     
+    @addConstraint(m, pNonControllableLoad[t]+vScheduledLoads[t]+vThermalLoad[t]+vBattCharge[t]-vPowerCurtail[t]==vPowerConsumed[t])     
     @addConstraint(m, vPowerConsumed[t]+sPowerExport[t]==vPowerPurchased[t]+sPowerProduced[t])
     
     #cannot import and export at the same time
@@ -190,7 +191,7 @@ end
 #@defExpr(TotalCost,sum{pDelta*pBuyEnergy[t]*sPowerPurchase[t] + pDelta*pSellEnergy[t]*sPowerExport[t],t=1:T})
 #@defExpr(TotalCost, sum{pBuyEnergy[t]*vPowerConsumed[t],t=1:T}+pTempDevPenalty*sum{vTotalTempDev[t],t=1:T}) #WORKS!
 @defExpr(NetworkCost, pNetworkCostperkW*vPowerPurchased[pNetworkPeakHour])
-@defExpr(EnergyCost, sum{pBuyEnergy[t]*vPowerPurchased[t],t=1:T}+pTempDevPenalty*sum{vTotalTempDev[t],t=1:T})
+@defExpr(EnergyCost, sum{pBuyEnergy[t]*vPowerPurchased[t],t=1:T}+pCostCurtail*pDelta*sum{vPowerCurtail[t],t=1:T}+pTempDevPenalty*sum{vTotalTempDev[t],t=1:T})
 @defExpr(TotalCost, EnergyCost+NetworkCost)
 @defExpr(TotalRevenue, sum{pSellEnergy[t]*sPowerExport[t],t=1:T})
 @defExpr(TotalPowerProvided[t=1:T],vPowerConsumed[t]+sPowerExport[t])
