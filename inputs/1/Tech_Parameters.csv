@@ -1,0 +1,2 @@
+pLoadTime,pFlexWindow,pDeadband_HVAC,pCapacitance_HVAC,pResistance_HVAC,pCOP_HVAC,pMaxPower_HVAC,pDeadband_WH,pCapacitance_WH,pResistance_WH,pCOP_WH,pMaxPower_WH,pBatt_DischargeEff,pBatt_ChargeEff,pBatt_CDeg,pBatt_InitialSOC,pBatt_SOCMax,pBatt_SOCMin
+8,12,1,2,4,3,5,3,0.4,120,1,4,1,1,0.1,0.5,1,0.1
