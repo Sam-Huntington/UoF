@@ -1,8 +1,7 @@
 
 # test comments
 # test comments2
-#scotts comment and sams comment
-
+# sams comment
 
 function dr_dre(df1,df2,df3)
     # df1 = hourly prices, weather
@@ -52,13 +51,11 @@ function dr_dre(df1,df2,df3)
     pFlexWindow = iTechParameters[1,:pFlexWindow] #iTechParameters[:pFinishTime][1:pNumCycles]
     pMaxLoad = iTechParameters[1,:pMaxLoad]
     pTotal_SL_kWh = iTechParameters[1,:pTotal_SL_kWh]
-    pSchedule = fBuild_Sched(pLoadTime, pFlexWindow, pNumCycles)
-    #below code ensures final schedule doesn't include start times outside of time range
-    i = 1
+    pSchedule = DataFrame()
 
-    while (pSchedule[2,pNumCycles] > T) & (i<=100)
-        pSchedule = fBuild_Sched(pLoadTime, pFlexWindow, pNumCycles)
-        i+=1
+    for i in 0:(pNumCycles-1)
+      a = [pLoadTime,pLoadTime+pFlexWindow].+i*48 #sample([36,48,48,60])
+      pSchedule = hcat(pSchedule,a)
     end
 
     #THERMAL PARAMETERS
@@ -93,7 +90,6 @@ function dr_dre(df1,df2,df3)
 
 
     #VARIABLES
-    #k = iTechParameters[1,:XXXXXXXXXX]
 
     #SCHEDULABLE LOADS
     @defVar(m, 0<=vSL[t=1:T,1:pNumCycles]<=pMaxLoad)
@@ -271,4 +267,14 @@ function dr_dre(df1,df2,df3)
     #out = convert(DataFrames.DataFrame, out)
     return  dfUsage #getValue(vPowerConsumed[1:T])
 
+end
+
+#builds semi-random schedule of start and finish times for schedulable loads
+function fBuild_Sched(st, fw, nc)
+    df = DataFrame()
+    for i in 0:(nc-1)
+        a = [st,st+fw].+i*48 #sample([36,48,48,60])
+        df = hcat(df,a)
+    end
+    return df
 end
