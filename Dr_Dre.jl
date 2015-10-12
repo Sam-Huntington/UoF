@@ -20,6 +20,7 @@ function dr_dre(df1,df2,df3)
 
     pBuyEnergy = iHourlyInputs[:pBuy_Energy][1:T]
     pSellEnergy = iHourlyInputs[:pSell_Energy][1:T]
+    pPeakDemandCharge = 10
     pNonControllableLoad = df3[1:T] #iHourlyInputs[:pNonControllableLoad][1:T]
 
     pSellPrimaryUpCap = iHourlyInputs[:pSell_PrimaryUpCap][1:T]
@@ -126,6 +127,7 @@ function dr_dre(df1,df2,df3)
     @defVar(m, vPowerImportorExport[t=1:T], Bin)
     @defVar(m, vPowerPurchased[t=1:T] >=0) # power ultimately purchased from utility
     @defVar(m, sPowerExport[t=1:T] >= 0)
+    @defVar(m, vMaxDemand >= 0)
 
     #SCHEDULABLE LOADS
     for w = 1:pNumCycles
@@ -188,8 +190,8 @@ function dr_dre(df1,df2,df3)
         for t=1:T
             @addConstraint(m, vBattCharge[t]==0)
             @addConstraint(m, vBattDischarge[t]==0)
-            @addConstraint(m, vBattRegUpCap[t]==0)
-            @addConstraint(m, vBattRegDownCap[t]==0)
+            @addConstraint(m, vBattPrimaryUpCap[t]==0)
+            @addConstraint(m, vBattPrimaryDownCap[t]==0)
         end
     end
 
@@ -218,6 +220,8 @@ function dr_dre(df1,df2,df3)
         #cannot import and export at the same time
         @addConstraint(m, sPowerExport[t] <= 10000000*(1-vPowerImportorExport[t]))
         @addConstraint(m, vPowerPurchased[t] <= 10000000*(vPowerImportorExport[t]))
+        @addConstraint(m, vPowerPurchased[t] <= vMaxDemand)
+        @addConstraint(m, sPowerExport[t] <= vMaxDemand)
     end
 
     #OBJECTIVE FUNCTION
@@ -225,31 +229,30 @@ function dr_dre(df1,df2,df3)
     @defExpr(NetworkCost, pNetworkCostperkW*vPowerPurchased[pNetworkPeakHour])
     @defExpr(EnergyCost, sum{pBuyEnergy[t]*vPowerPurchased[t],t=1:T}+pTempDevPenalty*sum{vTotalTempDev[t],t=1:T}+pDelta*sum{pCostCurtail*vPowerCurtail[t],t=1:T})
     @defExpr(PrimaryReserveRevenue, sum{pSellPrimaryUpCap[t]*vBattPrimaryUpCap[t]+pSellPrimaryDownCap[t]*vBattPrimaryDownCap[t],t=1:T}+pDelta*sum{pSellPrimaryEnergy[t]*sBattPrimaryUpEnergy[t]+pBuyPrimaryEnergy[t]*sBattPrimaryDownEnergy[t],t=1:T})
-    @defExpr(TotalCost, EnergyCost+NetworkCost)
-    @defExpr(TotalRevenue, sum{pSellEnergy[t]*sPowerExport[t],t=1:T})
+    @defExpr(CapacityCost, pPeakDemandCharge*vMaxDemand)
+    @defExpr(TotalCost, EnergyCost+NetworkCost+CapacityCost)
+    @defExpr(EnergyRevenue, sum{pSellEnergy[t]*sPowerExport[t],t=1:T})
+    @defExpr(TotalRevenue,EnergyRevenue+PrimaryReserveRevenue)
     @defExpr(TotalPowerProvided[t=1:T],vPowerConsumed[t]+sPowerExport[t])
-    @setObjective(m, Min, TotalCost - TotalRevenue-PrimaryReserveRevenue)
+    @setObjective(m, Min, TotalCost - TotalRevenue)
 
-    #TT = STDOUT # save original STDOUT stream
-    #redirect_stdout()
     solve(m)
-    #redirect_stdout(TT)
 
     #REPORTING
-    aTemp = hcat(pMonth[1:T],pWeek[1:T],pHour[1:T],pBuyEnergy[1:T],pSellEnergy[1:T],getValue(vPowerConsumed[1:T]),
+    aUsage = hcat(pMonth[1:T],pWeek[1:T],pHour[1:T],pBuyEnergy[1:T],pSellEnergy[1:T],getValue(vPowerConsumed[1:T]),
                 getValue(sPowerProduced[1:T]),getValue(vPowerPurchased[1:T]),getValue(sPowerExport[1:T]),
                 getValue(vBattDischarge[1:T]),getValue(vBattCharge[1:T]),pSetpoint[1:T],pOutdoorTemp[1:T],
                 getValue(sTempInt[1:T]),getValue(vBattSOC[1:T]),getValue(vBattSOH[1:T]),getValue(vPowerHP[1:T]),
                 getValue(vScheduledLoads[1:T]),getValue(vPowerWH[1:T]),getValue(vPowerAC[1:T]),pNonControllableLoad[1:T],
                 getValue(EndUseLoads[1:T]), getValue(vBattPrimaryDownCap[1:T]),
-             getValue(vBattPrimaryUpCap[1:T]),
-             getValue(sBattPrimaryUpEnergy[1:T]),
-             getValue(sBattPrimaryDownEnergy[1:T]),
-             getValue(sBattPrimaryEnergyLosses[1:T])
+                getValue(vBattPrimaryUpCap[1:T]),
+                getValue(sBattPrimaryUpEnergy[1:T]),
+                getValue(sBattPrimaryDownEnergy[1:T]),
+                getValue(sBattPrimaryEnergyLosses[1:T])
                  )
 
-    aTemp = convert(Array, aTemp)
-    dfUsage = convert(DataFrames.DataFrame, aTemp)
+    aUsage = convert(Array, aUsage)
+    dfUsage = convert(DataFrames.DataFrame, aUsage)
     rename!(dfUsage, {:x1=>:Month,:x2=>:Week,:x3=>:Hour,:x4=>:Buy_Energy,:x5=>:Sell_Energy,:x6=>:Power_Consumed,
                 :x7=>:Power_Produced,:x8=>:Power_Purchased,:x9=>:Power_Export,:x10=>:Batt_Discharge,:x11=>:Batt_Charge,
                 :x12=>:Set_point,:x13=>:Outdoor_temp,:x14=>:Indoor_temp,:x15=>:Battery_SOC,:x16=>:Battery_SOH,
@@ -261,11 +264,13 @@ function dr_dre(df1,df2,df3)
                   :x27=>:Primary_EnergyLosses}
             )
 
+    aCosts = [getValue(TotalCost),getValue(EnergyCost),getValue(NetworkCost),getValue(CapacityCost),getValue(TotalRevenue),getValue(EnergyRevenue),getValue(PrimaryReserveRevenue)]
+
     #writetable("outputs.csv",dfUsage)
 
     #out = convert(Array, getValue(vPowerConsumed[1:T]))
     #out = convert(DataFrames.DataFrame, out)
-    return  dfUsage #getValue(vPowerConsumed[1:T])
+    return  dfUsage, aCosts #, PeakDemandCharge #getValue(vPowerConsumed[1:T])
 
 end
 
