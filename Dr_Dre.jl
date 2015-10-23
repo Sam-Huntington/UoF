@@ -1,46 +1,87 @@
+#####################################################################
+#
+#    The Demand Responce and Distributed Resource Economics model
+#                             (DrDre)
+#
+#
+# Notes:
+#   - actual model is contained within run_dr_dre function at the bottom
+#   - the function must be passed 2 sets of inputs, formatted as dataframes:
+#         1: "hourly parameters" which vary by timestep
+#         2: "tech parameters" which are all single values
+#   - to specify inputs and output files and run the model, run the code at the top
+#
+#
+####################################################################
 
-# test comments
-# test comments2
-# sams comment
 
-function dr_dre(df1,df2,df3)
+###### Set Inputs and Outputs Files Locations and Run DrDre ########
+
+path = "C:\\Program Files\\Git\\UoF\\Aggregation\\"
+df1 = readtable("$path"*"Hourly_Parameters.csv",header=true)
+df2 = readtable("$path"*"Tech_Parameters.csv",header=true)
+df2[:id]=ones(1:size(df2,1))
+df2 = unstack(df2,:id,:Variable,:Value)
+df3 = readtable("$path"*"df3.csv",header=true) #non-functional unless running iterations over many bldg types
+usage_out, cost_out = run_dr_dre(df1,df2[1,:],df3[1])
+if isfile("$path"*"test_outputs.csv")==true
+  rm("$path"*"test_outputs.csv")
+end
+writetable("$path"*"test_outputs.csv",usage_out)
+writecsv("$path"*"cost_outputs.csv",cost_out)
+
+########## Import Modules ##########################################
+
+using DataFrames
+using JuMP
+using Gurobi
+using Statsbase
+
+########## Function to Build and Run Model given Inputs ############
+
+function run_dr_dre(df1,df2,df3)
     # df1 = hourly prices, weather
     # df2 = technology parameters
     # df3 = non-controllable loads
 
-    m = Model(solver=GurobiSolver())
+    dre = Model(solver=GurobiSolver())
 
     iHourlyInputs = df1 #readtable("$path/Hourly_Parameters.csv",header=true)
     iTechParameters = df2 #readtable("$path/Tech_Parameters.csv",header=true)
+    #iTechParameters[:id]=ones(1:size(iTechParameters,1))
+    #iTechParameters = unstack(iTechParameters,:id,:Variable,:Value)
 
-    T =  168 #length(iHourlyInputs[:pHour]) #24*7 #
+    T =  length(iHourlyInputs[:pHour]) #24*7 #168
     pMonth = iHourlyInputs[:pMonth][1:T]
     pWeek = iHourlyInputs[:pWeek][1:T]
     pHour = iHourlyInputs[:pHour][1:T]
+    M = maximum(pMonth[1:T]) #pMonth[T-1]
 
     pBuyEnergy = iHourlyInputs[:pBuy_Energy][1:T]
     pSellEnergy = iHourlyInputs[:pSell_Energy][1:T]
-    pPeakDemandCharge = 10
-    pNonControllableLoad = df3[1:T] #iHourlyInputs[:pNonControllableLoad][1:T]
+    pMoNetworkCost = iHourlyInputs[:pMonthly_Network_Cost][1:M]
+    #pNetworkCostperkW = 0 #for annual network cost use this single value
+    pHP_Month = iHourlyInputs[:pHP_Month][1:M]
+    pAC_Month = iHourlyInputs[:pAC_Month][1:M]
+
+    pNonControllableLoad = iHourlyInputs[:pNonControllableLoad][1:T] #df3[1:T] #
 
     pSellPrimaryUpCap = iHourlyInputs[:pSell_PrimaryUpCap][1:T]
-	  pSellPrimaryDownCap = iHourlyInputs[:pSell_PrimaryDownCap][1:T]
-	  pSellPrimaryEnergy = iHourlyInputs[:pSell_PrimaryEnergy][1:T]
-	  pBuyPrimaryEnergy = iHourlyInputs[:pBuy_PrimaryEnergy][1:T] #will be equal to pSellPrimaryEnergy if movement/ mileage prices are symmetric
-	  pD2CPrimaryUp = iHourlyInputs[:pD2CPrimaryUp][1:T]
-	  pD2CPrimaryDown = iHourlyInputs[:pD2CPrimaryDown][1:T]
+    pSellPrimaryDownCap = iHourlyInputs[:pSell_PrimaryDownCap][1:T]
+    pSellPrimaryEnergy = iHourlyInputs[:pSell_PrimaryEnergy][1:T]
+    pBuyPrimaryEnergy = iHourlyInputs[:pBuy_PrimaryEnergy][1:T] #will be equal to pSellPrimaryEnergy if movement/ mileage prices are symmetric
+    pD2CPrimaryUp = iHourlyInputs[:pD2CPrimaryUp][1:T]
+    pD2CPrimaryDown = iHourlyInputs[:pD2CPrimaryDown][1:T]
 
-    pNetworkPeakHour = 117
-    pNetworkCostperkW = 0
+    #Peak day capacity charge
+    pPeakDemandCharge = 10
+    pNetworkPeakHour = 4240
+
     pDelta = 1 #duration of time period (hr)
-    pCostCurtail = 2500 #cost of curtailment - will depend on the scenario ($/KWH)
-    #pGenAssets = [5 5 2.5 2.5] # this is where you specify the technology choices; will ultimately take this from dataframes
-    #genAssets = [pPVbank pBatt_NominalE pBatt_DischargeCapacity pBatt_ChargeCapacity]
-    #pGenAssets = [15 5 2.5 2.5]
+    pCostCurtail = iTechParameters[1,:pCostCurtail] #cost of curtailment - will depend on the scenario ($/KWH)
 
     #NON-CONTROLLABLE GEN PARAMETERS
-    pPV_Capacity = iTechParameters[:PV_Cap] #this is the total capacity of the PV panels
-
+    #pPV_Capacity = iTechParameters[1,:PV_Cap] #this is the total capacity of the PV panels
     pPV_Generation = iHourlyInputs[:pPV_Generation][1:T]*iTechParameters[1,:PV_Cap]
 
     pOtherNonControllableGen = iHourlyInputs[:pOtherNonControllableGen][1:T]  # declaring non-PV based non-controllable generation
@@ -67,7 +108,7 @@ function dr_dre(df1,df2,df3)
     pResistance = iTechParameters[1,:pResistance_HVAC]                #thermal resistance of between interior and exterior (C/kWh)
     pCOP = iTechParameters[1,:pCOP_HVAC]                              #COP of heat pump (eventually convert to piecewise linear)
     pMaxPower = iTechParameters[1,:pMaxPower_HVAC]
-    pTempDevPenalty = 10 #iTechParameters[1,:pTempDevPenalty]        #temperature deviation penalty ($/deg C)
+    pTempDevPenalty = iTechParameters[1,:pTempDevPenalty]        #temperature deviation penalty ($/deg C)
 
     pWH_AmbientTemp = 20
     pWH_Setpoint = 50
@@ -93,69 +134,94 @@ function dr_dre(df1,df2,df3)
     #VARIABLES
 
     #SCHEDULABLE LOADS
-    @defVar(m, 0<=vSL[t=1:T,1:pNumCycles]<=pMaxLoad)
+    @defVar(dre, 0<=vSL[t=1:T,1:pNumCycles]<=pMaxLoad)
 
     #THERMAL LOADS
-    @defVar(m, sTempInt[t=1:T] >=0)                 # internal home temp (state variable)
-    @defVar(m, sExtLosses[t=1:T])                   # losses/gains from thermal leakage through building shell
-    @defVar(m, sIntGains[t=1:T])                    # internal gains
-    @defVar(m, 0 <= vPowerHP[t=1:T] <= pMaxPower)         # HVAC power draw (continuous, 5kW max) | allow negative values = cooling???
-    @defVar(m, 0 <= vPowerAC[t=1:T] <= pMaxPower)
-    @defVar(m, vTempLow[t=1:T]>=0)                                       # penalty for temp deviations
-    @defVar(m, vTempHigh[t=1:T]>=0)
+    @defVar(dre, sTempInt[t=1:T] >=0)                 # internal home temp (state variable)
+    @defVar(dre, sExtLosses[t=1:T])                   # losses/gains from thermal leakage through building shell
+    @defVar(dre, sIntGains[t=1:T])                    # internal gains
+    @defVar(dre, 0 <= vPowerHP[t=1:T] <= pMaxPower)         # HVAC power draw (continuous, 5kW max) | allow negative values = cooling???
+    @defVar(dre, 0 <= vPowerAC[t=1:T] <= pMaxPower)
+    @defVar(dre, vTempLow[t=1:T]>=0)                                       # penalty for temp deviations
+    @defVar(dre, vTempHigh[t=1:T]>=0)
 
     #WATER HEAETER
-    @defVar(m, sWH_TempInt[t=1:T] >=0)                 # internal tank temp (state variable)
-    @defVar(m, sWH_ExtLosses[t=1:T])                   # losses/gains from thermal leakage through building shell
-    @defVar(m, sWH_IntGains[t=1:T])                    # internal gains
-    @defVar(m, 0 <= vPowerWH[t=1:T] <= pWH_MaxPower)         # WH power draw
-    @defVar(m, vWH_TempLow[t=1:T]>=0)                                       # penalty for temp deviations
-    @defVar(m, vWH_TempHigh[t=1:T]>=0)
+    @defVar(dre, sWH_TempInt[t=1:T] >=0)                 # internal tank temp (state variable)
+    @defVar(dre, sWH_ExtLosses[t=1:T])                   # losses/gains from thermal leakage through building shell
+    @defVar(dre, sWH_IntGains[t=1:T])                    # internal gains
+    @defVar(dre, 0 <= vPowerWH[t=1:T] <= pWH_MaxPower)         # WH power draw
+    @defVar(dre, vWH_TempLow[t=1:T]>=0)                                       # penalty for temp deviations
+    @defVar(dre, vWH_TempHigh[t=1:T]>=0)
 
     #BATTERY
-    @defVar(m, pBattSOCMin <= vBattSOC[t=1:T] <= pBattSOCMax) # SOC of battery ----- SB!!! Maybe make this a state variable, not a decision variable.
-    @defVar(m, vBattSOH[t=1:T] >= 0) #State of health of battery (degradation costs)
-    @defVar(m, vBattPrimaryDownCap[t=1:T] >=0) #capacity made available for down regulation
-    @defVar(m, vBattPrimaryUpCap[t=1:T] >=0) #capacity made available for down regulation
-    @defVar(m, vBattCharge[t=1:T] >= 0) #battery charging power
-    @defVar(m, vBattDischarge[t=1:T] >= 0) #battery discharging power
-    @defVar(m, vBattCorD[t=1:T], Bin) #batt charging or discharging binary variable.
+    @defVar(dre, pBattSOCMin <= vBattSOC[t=1:T] <= pBattSOCMax) # SOC of battery ----- SB!!! Maybe make this a state variable, not a decision variable.
+    @defVar(dre, vBattSOH[t=1:T] >= 0) #State of health of battery (degradation costs)
+    @defVar(dre, vBattPrimaryDownCap[t=1:T] >=0) #capacity made available for down regulation
+    @defVar(dre, vBattPrimaryUpCap[t=1:T] >=0) #capacity made available for down regulation
+    @defVar(dre, vBattCharge[t=1:T] >= 0) #battery charging power
+    @defVar(dre, vBattDischarge[t=1:T] >= 0) #battery discharging power
+    @defVar(dre, vBattCorD[t=1:T], Bin) #batt charging or discharging binary variable.
 
     #DEMAND BALANCE
-    @defVar(m, vPowerCurtail[t=1:T] >= 0) #curtailed power
-    @defVar(m, vPowerConsumed[t=1:T] >=0) # consumed power
-    @defVar(m, vPowerImportorExport[t=1:T], Bin)
-    @defVar(m, vPowerPurchased[t=1:T] >=0) # power ultimately purchased from utility
-    @defVar(m, sPowerExport[t=1:T] >= 0)
-    @defVar(m, vMaxDemand >= 0)
+    @defVar(dre, vPowerCurtail[t=1:T] >=0) #curtailed power
+    @defVar(dre, vPowerConsumed[t=1:T] >=0) # consumed power
+    @defVar(dre, vPowerImportorExport[t=1:T], Bin)
+    @defVar(dre, vPowerPurchased[t=1:T] >=0) # power ultimately purchased from utility
+    @defVar(dre, sPowerExport[t=1:T] >= 0)
+    @defVar(dre, vMaxDemand[m=1:M] >= 0)
 
     #SCHEDULABLE LOADS
     for w = 1:pNumCycles
-        @addConstraint(m, pTotal_SL_kWh==sum{vSL[t,w],t=pSchedule[1,w]:pSchedule[2,w]})
-        @addConstraint(m, pTotal_SL_kWh==sum{vSL[t,w],t=1:T})
+      @addConstraint(dre, pTotal_SL_kWh==sum{vSL[t,w],t=pSchedule[1,w]:pSchedule[2,w]})
+      @addConstraint(dre, pTotal_SL_kWh==sum{vSL[t,w],t=1:T})
     end
     @defExpr(vScheduledLoads[t=1:T], sum{vSL[t,w], w=1:pNumCycles})
 
     #THERMAL LOADS (HEATING/COOLING/WATER HEATING)
     for t = 1
-        @addConstraint(m, sTempInt[t]==pSetpoint[t])
-        @addConstraint(m, sWH_TempInt[t]==pWH_Setpoint)
+      @addConstraint(dre, sTempInt[t]==pSetpoint[t])
+      @addConstraint(dre, sWH_TempInt[t]==pWH_Setpoint)
     end
     for t = 2:T
-        @addConstraint(m,sTempInt[t-1]+((sExtLosses[t-1]+sIntGains[t-1])/pCapacitance)==sTempInt[t]) # temp evolution | temp(t) = temp(t-1) + (gains - losses)/heat capacity
-        @addConstraint(m,sWH_TempInt[t-1]+((sWH_ExtLosses[t-1]+sWH_IntGains[t-1])/pWH_Capacitance)==sWH_TempInt[t]) # temp evolution | temp(t) = temp(t-1) + (gains - losses)/heat capacity
+        if (pHP_Month[pMonth[t]] | pAC_Month[pMonth[t]])
+            @addConstraint(dre,sTempInt[t-1]+((sExtLosses[t-1]+sIntGains[t-1])/pCapacitance)==sTempInt[t]) # temp evolution | temp(t) = temp(t-1) + (gains - losses)/heat capacity
+        else #if neither HP or AC are affecting the temp, let it equal the Setpoint (assume heating from a different fuel)
+            @addConstraint(dre,sTempInt[t]==pSetpoint[t])
+        end
+        @addConstraint(dre,sWH_TempInt[t-1]+((sWH_ExtLosses[t-1]+sWH_IntGains[t-1])/pWH_Capacitance)==sWH_TempInt[t]) # temp evolution | temp(t) = temp(t-1) + (gains - losses)/heat capacity
     end
     for t = 1:T
-        @addConstraint(m, ((pOutdoorTemp[t] - sTempInt[t])/(pCapacitance*pResistance))==sExtLosses[t])   #losses from thermal leakage
-        @addConstraint(m, ((pCOP*vPowerHP[t])/pCapacitance)-(((pCOP-1)*vPowerAC[t])/pCapacitance)==sIntGains[t])                         #interanl temp gain from heat pump
-        @addConstraint(m, (pSetpoint[t]-pDeadband)-vTempLow[t]<=sTempInt[t])
-        @addConstraint(m, (pSetpoint[t]+pDeadband)+vTempHigh[t]>=sTempInt[t])
-        @addConstraint(m, vPowerHP[t]+vPowerAC[t]<=pMaxPower)
+        if (pHP_Month[pMonth[t]] & pAC_Month[pMonth[t]]) #if HP is turned on for the given month
+            @addConstraint(dre, ((pOutdoorTemp[t] - sTempInt[t])/(pCapacitance*pResistance))==sExtLosses[t])   #losses from thermal leakage
+            @addConstraint(dre, ((pCOP*vPowerHP[t])/pCapacitance)-(((pCOP-1)*vPowerAC[t])/pCapacitance)==sIntGains[t])                         #interanl temp gain from heat pump
+            @addConstraint(dre, (pSetpoint[t]-pDeadband)-vTempLow[t]<=sTempInt[t])
+            @addConstraint(dre, (pSetpoint[t]+pDeadband)+vTempHigh[t]>=sTempInt[t])
+            @addConstraint(dre, vPowerHP[t]+vPowerAC[t]<=pMaxPower)
+        elseif pHP_Month[pMonth[t]]==true #then internal temp only a function of HP, high temps not penalized
+            @addConstraint(dre, ((pOutdoorTemp[t] - sTempInt[t])/(pCapacitance*pResistance))==sExtLosses[t])   #losses from thermal leakage
+            @addConstraint(dre, ((pCOP*vPowerHP[t])/pCapacitance)==sIntGains[t])                         #interanl temp gain from heat pump
+            @addConstraint(dre, (pSetpoint[t]-pDeadband)-vTempLow[t]<=sTempInt[t])
+            #@addConstraint(dre, (pSetpoint[t]+pDeadband+4)+vTempHigh[t]>=sTempInt[t])
+            @addConstraint(dre, vPowerHP[t]+vPowerAC[t]<=pMaxPower)
+            @addConstraint(dre, vPowerAC[t]==0)
+            @addConstraint(dre, sTempInt[t]<=24)
+        elseif pAC_Month[pMonth[t]]==true #then internal temp only a function of HP, high temps not penalized
+            @addConstraint(dre, ((pOutdoorTemp[t] - sTempInt[t])/(pCapacitance*pResistance))==sExtLosses[t])   #losses from thermal leakage
+            @addConstraint(dre, (-((pCOP-1)*vPowerAC[t])/pCapacitance)==sIntGains[t])                         #interanl temp gain from heat pump
+            #@addConstraint(dre, (pSetpoint[t]-pDeadband-4)-vTempLow[t]<=sTempInt[t])
+            @addConstraint(dre, (pSetpoint[t]+pDeadband)+vTempHigh[t]>=sTempInt[t])
+            @addConstraint(dre, vPowerHP[t]+vPowerAC[t]<=pMaxPower)
+            @addConstraint(dre, vPowerHP[t]==0)
+            @addConstraint(dre, sTempInt[t]>=20)
+        else
+            @addConstraint(dre, vPowerHP[t]==0)
+            @addConstraint(dre, vPowerAC[t]==0)
+        end
 
-        @addConstraint(m, ((pWH_AmbientTemp - sWH_TempInt[t])/(pWH_Capacitance*pWH_Resistance))==sWH_ExtLosses[t])
-        @addConstraint(m, ((pWH_COP*vPowerWH[t])/pWH_Capacitance)==sWH_IntGains[t])
-        @addConstraint(m, (pWH_Setpoint-pWH_Deadband)-vWH_TempLow[t]<=sWH_TempInt[t])
-        @addConstraint(m, (pWH_Setpoint+pWH_Deadband)+vWH_TempHigh[t]>=sWH_TempInt[t])
+        @addConstraint(dre, ((pWH_AmbientTemp - sWH_TempInt[t])/(pWH_Capacitance*pWH_Resistance))==sWH_ExtLosses[t])
+        @addConstraint(dre, ((pWH_COP*vPowerWH[t])/pWH_Capacitance)==sWH_IntGains[t])
+        @addConstraint(dre, (pWH_Setpoint-pWH_Deadband)-vWH_TempLow[t]<=sWH_TempInt[t])
+        @addConstraint(dre, (pWH_Setpoint+pWH_Deadband)+vWH_TempHigh[t]>=sWH_TempInt[t])
     end
     @defExpr(vThermalLoad[t=1:T], vPowerHP[t]+vPowerAC[t]+vPowerWH[t])
     @defExpr(vTotalTempDev[t=1:T],vTempHigh[t]+vTempLow[t]+vWH_TempHigh[t]+vWH_TempLow[t])
@@ -163,7 +229,7 @@ function dr_dre(df1,df2,df3)
     #BATTERY
 
     #constraining state of charge to appropriate limits
-    @addConstraint(m, vBattSOC[1] == pBattInitialSOC)
+    @addConstraint(dre, vBattSOC[1] == pBattInitialSOC)
 
     # defining charging losses and efficiency
     @defExpr(sBattDischargeLosses[t=1:T], pBattDischargeEff*vBattDischarge[t])
@@ -179,77 +245,84 @@ function dr_dre(df1,df2,df3)
     @defExpr(sBattPrimaryEnergyLosses[t=1:T], sBattPrimaryUpEnergyLosses[t]+sBattPrimaryDownEnergyLosses[t])
 
     if pBattNominalE > 0
-        for t=1:T
-            @addConstraint(m, vBattCharge[t]<=pBattChargeCapacity)
-            @addConstraint(m, vBattDischarge[t]<=pBattDischargeCapacity)
-            @addConstraint(m, vBattPrimaryUpCap[t]<= (pBattDischargeCapacity-vBattDischarge[t]))
-            @addConstraint(m, vBattPrimaryDownCap[t]<=(pBattChargeCapacity-vBattCharge[t]))
-            @addConstraint(m, vBattPrimaryUpCap[t]==vBattPrimaryDownCap[t])
-        end
+      for t=1:T
+        @addConstraint(dre, vBattCharge[t]<=pBattChargeCapacity)
+        @addConstraint(dre, vBattDischarge[t]<=pBattDischargeCapacity)
+        @addConstraint(dre, vBattPrimaryUpCap[t]<= (pBattDischargeCapacity-vBattDischarge[t]))
+        @addConstraint(dre, vBattPrimaryDownCap[t]<=(pBattChargeCapacity-vBattCharge[t]))
+        @addConstraint(dre, vBattPrimaryUpCap[t]==vBattPrimaryDownCap[t])
+      end
     else
-        for t=1:T
-            @addConstraint(m, vBattCharge[t]==0)
-            @addConstraint(m, vBattDischarge[t]==0)
-            @addConstraint(m, vBattPrimaryUpCap[t]==0)
-            @addConstraint(m, vBattPrimaryDownCap[t]==0)
-        end
+      for t=1:T
+        @addConstraint(dre, vBattCharge[t]==0)
+        @addConstraint(dre, vBattDischarge[t]==0)
+        @addConstraint(dre, vBattPrimaryUpCap[t]==0)
+        @addConstraint(dre, vBattPrimaryDownCap[t]==0)
+      end
     end
 
     if pBattNominalE > 0
-        for t = 2:T
-            @addConstraint(m, vBattSOC[t-1] - (pDelta/pBattNominalE)*(sBattOutput[t-1] - sBattInput[t-1] + sBattLosses[t-1]) == vBattSOC[t])
-        end
+      for t = 2:T
+        @addConstraint(dre, vBattSOC[t-1] - (pDelta/pBattNominalE)*(sBattOutput[t-1] - sBattInput[t-1] + sBattLosses[t-1]) == vBattSOC[t])
+      end
     else
-        for t = 2:T
-            @addConstraint(m, vBattSOC[t] == vBattSOC[1])
-        end
+      for t = 2:T
+        @addConstraint(dre, vBattSOC[t] == vBattSOC[1])
+      end
     end
 
     #define charge or discharge constraint
     for t=1:T
-        @addConstraint(m, vBattCharge[t] <= 1000000*vBattCorD[t])
-        @addConstraint(m, vBattDischarge[t] <= 1000000*(1-vBattCorD[t]))
+      @addConstraint(dre, vBattCharge[t] <= 1000000*vBattCorD[t])
+      @addConstraint(dre, vBattDischarge[t] <= 1000000*(1-vBattCorD[t]))
     end
 
     #DEMAND BALANCE
     @defExpr(sPowerProduced[t=1:T], pTotalNonControllableGen[t] + vBattDischarge[t])
 
     for t=1:T
-        @addConstraint(m, pNonControllableLoad[t]+vScheduledLoads[t]+vThermalLoad[t]+vBattCharge[t]-vPowerCurtail[t]==vPowerConsumed[t])
-        @addConstraint(m, vPowerConsumed[t]+sPowerExport[t]==vPowerPurchased[t]+sPowerProduced[t])
-        #cannot import and export at the same time
-        @addConstraint(m, sPowerExport[t] <= 10000000*(1-vPowerImportorExport[t]))
-        @addConstraint(m, vPowerPurchased[t] <= 10000000*(vPowerImportorExport[t]))
-        @addConstraint(m, vPowerPurchased[t] <= vMaxDemand)
-        @addConstraint(m, sPowerExport[t] <= vMaxDemand)
+      @addConstraint(dre, pNonControllableLoad[t]+vScheduledLoads[t]+vThermalLoad[t]+vBattCharge[t]-vPowerCurtail[t]==vPowerConsumed[t])
+      @addConstraint(dre, vPowerConsumed[t]+sPowerExport[t]==vPowerPurchased[t]+sPowerProduced[t])
+      #cannot import and export at the same time
+      @addConstraint(dre, sPowerExport[t] <= 10000000*(1-vPowerImportorExport[t]))
+      @addConstraint(dre, vPowerPurchased[t] <= 10000000*(vPowerImportorExport[t]))
+    end
+
+    for t = 1:T #setting the monthly max demand Variable
+      #pMonth[t]
+      @addConstraint(dre, vPowerPurchased[t] <= vMaxDemand[pMonth[t]])
+      @addConstraint(dre, sPowerExport[t] <= vMaxDemand[pMonth[t]])
     end
 
     #OBJECTIVE FUNCTION
     @defExpr(EndUseLoads[t=1:T], pNonControllableLoad[t]+vScheduledLoads[t]+vThermalLoad[t])
-    @defExpr(NetworkCost, pNetworkCostperkW*vPowerPurchased[pNetworkPeakHour])
-    @defExpr(EnergyCost, sum{pBuyEnergy[t]*vPowerPurchased[t],t=1:T}+pTempDevPenalty*sum{vTotalTempDev[t],t=1:T}+pDelta*sum{pCostCurtail*vPowerCurtail[t],t=1:T})
+    @defExpr(PeakDayCost, pPeakDemandCharge*vPowerPurchased[pNetworkPeakHour])
+    @defExpr(EnergyCost, sum{pBuyEnergy[t]*vPowerPurchased[t],t=1:T})
+    @defExpr(TempDevCost, pTempDevPenalty*sum{vTotalTempDev[t],t=1:T})
+    @defExpr(CurtailCost, pCostCurtail*sum{vPowerCurtail[t],t=1:T})
+    @defExpr(NetEnergyCost, EnergyCost+TempDevCost+CurtailCost)
     @defExpr(PrimaryReserveRevenue, sum{pSellPrimaryUpCap[t]*vBattPrimaryUpCap[t]+pSellPrimaryDownCap[t]*vBattPrimaryDownCap[t],t=1:T}+pDelta*sum{pSellPrimaryEnergy[t]*sBattPrimaryUpEnergy[t]+pBuyPrimaryEnergy[t]*sBattPrimaryDownEnergy[t],t=1:T})
-    @defExpr(CapacityCost, pPeakDemandCharge*vMaxDemand)
-    @defExpr(TotalCost, EnergyCost+NetworkCost+CapacityCost)
+    @defExpr(NetworkCost, sum{pMoNetworkCost[m]*vMaxDemand[m],m=1:M})
+    @defExpr(TotalCost, NetEnergyCost+NetworkCost+PeakDayCost)
     @defExpr(EnergyRevenue, sum{pSellEnergy[t]*sPowerExport[t],t=1:T})
     @defExpr(TotalRevenue,EnergyRevenue+PrimaryReserveRevenue)
     @defExpr(TotalPowerProvided[t=1:T],vPowerConsumed[t]+sPowerExport[t])
-    @setObjective(m, Min, TotalCost - TotalRevenue)
 
-    solve(m)
+    @setObjective(dre, Min, TotalCost - TotalRevenue)
+    solve(dre)
 
     #REPORTING
+    md = zeros(T,1)
+    md[1:M] = getValue(vMaxDemand[1:M])
     aUsage = hcat(pMonth[1:T],pWeek[1:T],pHour[1:T],pBuyEnergy[1:T],pSellEnergy[1:T],getValue(vPowerConsumed[1:T]),
                 getValue(sPowerProduced[1:T]),getValue(vPowerPurchased[1:T]),getValue(sPowerExport[1:T]),
                 getValue(vBattDischarge[1:T]),getValue(vBattCharge[1:T]),pSetpoint[1:T],pOutdoorTemp[1:T],
                 getValue(sTempInt[1:T]),getValue(vBattSOC[1:T]),getValue(vBattSOH[1:T]),getValue(vPowerHP[1:T]),
                 getValue(vScheduledLoads[1:T]),getValue(vPowerWH[1:T]),getValue(vPowerAC[1:T]),pNonControllableLoad[1:T],
-                getValue(EndUseLoads[1:T]), getValue(vBattPrimaryDownCap[1:T]),
-                getValue(vBattPrimaryUpCap[1:T]),
-                getValue(sBattPrimaryUpEnergy[1:T]),
-                getValue(sBattPrimaryDownEnergy[1:T]),
-                getValue(sBattPrimaryEnergyLosses[1:T])
-                 )
+                getValue(EndUseLoads[1:T]), getValue(vBattPrimaryDownCap[1:T]),getValue(vBattPrimaryUpCap[1:T]),
+                getValue(sBattPrimaryUpEnergy[1:T]),getValue(sBattPrimaryDownEnergy[1:T]),getValue(sBattPrimaryEnergyLosses[1:T]),
+                md[1:T], getValue(vTotalTempDev[1:T]))
+
 
     aUsage = convert(Array, aUsage)
     dfUsage = convert(DataFrames.DataFrame, aUsage)
@@ -257,29 +330,24 @@ function dr_dre(df1,df2,df3)
                 :x7=>:Power_Produced,:x8=>:Power_Purchased,:x9=>:Power_Export,:x10=>:Batt_Discharge,:x11=>:Batt_Charge,
                 :x12=>:Set_point,:x13=>:Outdoor_temp,:x14=>:Indoor_temp,:x15=>:Battery_SOC,:x16=>:Battery_SOH,
                 :x17=>:HP_kW,:x18=>:Scheduled_Loads_kW,:x19=>:WH_kW,:x20=>:AC_kW,:x21=>:NonControllableLoads_kW,
-                :x22=>:EndUseLoads_kW,:x23=>:Primary_DownCap,
-                  :x24=>:Primary_UpCap,
-                  :x25=>:Primary_UpEnergy,
-                  :x26=>:Primary_DownEnergy,
-                  :x27=>:Primary_EnergyLosses}
-            )
+                :x22=>:EndUseLoads_kW,:x23=>:Primary_DownCap,:x24=>:Primary_UpCap,:x25=>:Primary_UpEnergy,:x26=>:Primary_DownEnergy,
+                :x27=>:Primary_EnergyLosses,:x28=>:Monthly_Peak_Demand,:x29=>:Temp_Deviations})
 
-    aCosts = [getValue(TotalCost),getValue(EnergyCost),getValue(NetworkCost),getValue(CapacityCost),getValue(TotalRevenue),getValue(EnergyRevenue),getValue(PrimaryReserveRevenue)]
+    aCosts = [getValue(TotalCost),getValue(EnergyCost),getValue(NetworkCost),getValue(PeakDayCost),getValue(TotalRevenue),getValue(EnergyRevenue),getValue(PrimaryReserveRevenue),getValue(TempDevCost),getValue(CurtailCost)]
+    names = ["Total_Cost","Energy_Cost","Network_Cost","Peak_Day_Cost","Total_Revenue","Energy_Revenue","Primary_Reserve_Revenue","Temp_Deviation_Cost","CurtailCost"]
+    aCost_out = hcat(names,aCosts)
 
-    #writetable("outputs.csv",dfUsage)
-
-    #out = convert(Array, getValue(vPowerConsumed[1:T]))
-    #out = convert(DataFrames.DataFrame, out)
-    return  dfUsage, aCosts #, PeakDemandCharge #getValue(vPowerConsumed[1:T])
+    return  dfUsage, aCost_out
 
 end
+
 
 #builds semi-random schedule of start and finish times for schedulable loads
-function fBuild_Sched(st, fw, nc)
-    df = DataFrame()
-    for i in 0:(nc-1)
-        a = [st,st+fw].+i*48 #sample([36,48,48,60])
-        df = hcat(df,a)
-    end
-    return df
-end
+#function fBuild_Sched(st, fw, nc)
+#    df = DataFrame()
+#    for i in 0:(nc-1)
+#        a = [st,st+fw].+i*48 #sample([36,48,48,60])
+#        df = hcat(df,a)
+#    end
+#    return df
+#end
