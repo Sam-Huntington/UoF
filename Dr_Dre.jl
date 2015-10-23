@@ -15,45 +15,46 @@
 ####################################################################
 
 
+####################################################################
 ###### Set Inputs and Outputs Files Locations and Run DrDre ########
+####################################################################
 
-path = "C:\\Program Files\\Git\\UoF\\Aggregation\\"
-df1 = readtable("$path"*"Hourly_Parameters.csv",header=true)
-df2 = readtable("$path"*"Tech_Parameters.csv",header=true)
-df2[:id]=ones(1:size(df2,1))
+path = "C:\\Program Files\\Git\\UoF\\Inputs_Outputs\\"             #working folder
+df1 = readtable("$path"*"Hourly_Parameters.csv",header=true)       #timeseries inputs
+df2 = readtable("$path"*"Tech_Parameters.csv",header=true)         #single value inputs
+df2[:id]=ones(1:size(df2,1))                                       #reshape df so model can read inputs
 df2 = unstack(df2,:id,:Variable,:Value)
-df3 = readtable("$path"*"df3.csv",header=true) #non-functional unless running iterations over many bldg types
-usage_out, cost_out = run_dr_dre(df1,df2[1,:],df3[1])
-if isfile("$path"*"test_outputs.csv")==true
+df3 = zeros(1,1) #readtable("$path"*"df3.csv",header=true)         #non-functional unless running iterations over many bldg types
+usage_out, cost_out = run_dr_dre(df1,df2[1,:],df3[1])              #pass input arrays to Dre, solve it, and store outputs in dataframes
+if isfile("$path"*"test_outputs.csv")==true                        #delete existing copy of outputs file
   rm("$path"*"test_outputs.csv")
 end
-writetable("$path"*"test_outputs.csv",usage_out)
+writetable("$path"*"test_outputs.csv",usage_out)                   #write outputs
 writecsv("$path"*"cost_outputs.csv",cost_out)
 
-########## Import Modules ##########################################
+####################################################################
+########## Modules & F'n to build/solve DrDre ######################
+####################################################################
 
 using DataFrames
 using JuMP
 using Gurobi
 using Statsbase
 
-########## Function to Build and Run Model given Inputs ############
-
 function run_dr_dre(df1,df2,df3)
     # df1 = hourly prices, weather
     # df2 = technology parameters
-    # df3 = non-controllable loads
+    # df3 = non-controllable loads (if looping across multiple random test cases, otherwise this can come from "hourly parameters")
 
     dre = Model(solver=GurobiSolver())
 
     iHourlyInputs = df1 #readtable("$path/Hourly_Parameters.csv",header=true)
     iTechParameters = df2 #readtable("$path/Tech_Parameters.csv",header=true)
-    #iTechParameters[:id]=ones(1:size(iTechParameters,1))
-    #iTechParameters = unstack(iTechParameters,:id,:Variable,:Value)
 
     T =  length(iHourlyInputs[:pHour]) #24*7 #168
     pMonth = iHourlyInputs[:pMonth][1:T]
     pWeek = iHourlyInputs[:pWeek][1:T]
+    pDay = iHourlyInputs[:pDay][1:T]
     pHour = iHourlyInputs[:pHour][1:T]
     M = maximum(pMonth[1:T]) #pMonth[T-1]
 
@@ -65,6 +66,7 @@ function run_dr_dre(df1,df2,df3)
     pAC_Month = iHourlyInputs[:pAC_Month][1:M]
 
     pNonControllableLoad = iHourlyInputs[:pNonControllableLoad][1:T] #df3[1:T] #
+    pWH_use = iHourlyInputs[:pWH_use][1:T]
 
     pSellPrimaryUpCap = iHourlyInputs[:pSell_PrimaryUpCap][1:T]
     pSellPrimaryDownCap = iHourlyInputs[:pSell_PrimaryDownCap][1:T]
@@ -82,7 +84,7 @@ function run_dr_dre(df1,df2,df3)
 
     #NON-CONTROLLABLE GEN PARAMETERS
     #pPV_Capacity = iTechParameters[1,:PV_Cap] #this is the total capacity of the PV panels
-    pPV_Generation = iHourlyInputs[:pPV_Generation][1:T]*iTechParameters[1,:PV_Cap]
+    pPV_Generation = iHourlyInputs[:pPV_Generation][1:T]*iTechParameters[1,:pPV_Cap]
 
     pOtherNonControllableGen = iHourlyInputs[:pOtherNonControllableGen][1:T]  # declaring non-PV based non-controllable generation
     @defExpr(pTotalNonControllableGen[t=1:T], pPV_Generation[t]+pOtherNonControllableGen[t]) #total non-controllable generation = PV + other
@@ -188,35 +190,20 @@ function run_dr_dre(df1,df2,df3)
         else #if neither HP or AC are affecting the temp, let it equal the Setpoint (assume heating from a different fuel)
             @addConstraint(dre,sTempInt[t]==pSetpoint[t])
         end
-        @addConstraint(dre,sWH_TempInt[t-1]+((sWH_ExtLosses[t-1]+sWH_IntGains[t-1])/pWH_Capacitance)==sWH_TempInt[t]) # temp evolution | temp(t) = temp(t-1) + (gains - losses)/heat capacity
+        @addConstraint(dre,sWH_TempInt[t-1]+((sWH_ExtLosses[t-1]+pWH_use[t]+sWH_IntGains[t-1])/pWH_Capacitance)==sWH_TempInt[t]) # temp evolution | temp(t) = temp(t-1) + (gains - losses)/heat capacity
     end
     for t = 1:T
-        if (pHP_Month[pMonth[t]] & pAC_Month[pMonth[t]]) #if HP is turned on for the given month
-            @addConstraint(dre, ((pOutdoorTemp[t] - sTempInt[t])/(pCapacitance*pResistance))==sExtLosses[t])   #losses from thermal leakage
-            @addConstraint(dre, ((pCOP*vPowerHP[t])/pCapacitance)-(((pCOP-1)*vPowerAC[t])/pCapacitance)==sIntGains[t])                         #interanl temp gain from heat pump
-            @addConstraint(dre, (pSetpoint[t]-pDeadband)-vTempLow[t]<=sTempInt[t])
-            @addConstraint(dre, (pSetpoint[t]+pDeadband)+vTempHigh[t]>=sTempInt[t])
-            @addConstraint(dre, vPowerHP[t]+vPowerAC[t]<=pMaxPower)
-        elseif pHP_Month[pMonth[t]]==true #then internal temp only a function of HP, high temps not penalized
-            @addConstraint(dre, ((pOutdoorTemp[t] - sTempInt[t])/(pCapacitance*pResistance))==sExtLosses[t])   #losses from thermal leakage
-            @addConstraint(dre, ((pCOP*vPowerHP[t])/pCapacitance)==sIntGains[t])                         #interanl temp gain from heat pump
-            @addConstraint(dre, (pSetpoint[t]-pDeadband)-vTempLow[t]<=sTempInt[t])
-            #@addConstraint(dre, (pSetpoint[t]+pDeadband+4)+vTempHigh[t]>=sTempInt[t])
-            @addConstraint(dre, vPowerHP[t]+vPowerAC[t]<=pMaxPower)
-            @addConstraint(dre, vPowerAC[t]==0)
-            @addConstraint(dre, sTempInt[t]<=24)
-        elseif pAC_Month[pMonth[t]]==true #then internal temp only a function of HP, high temps not penalized
-            @addConstraint(dre, ((pOutdoorTemp[t] - sTempInt[t])/(pCapacitance*pResistance))==sExtLosses[t])   #losses from thermal leakage
-            @addConstraint(dre, (-((pCOP-1)*vPowerAC[t])/pCapacitance)==sIntGains[t])                         #interanl temp gain from heat pump
-            #@addConstraint(dre, (pSetpoint[t]-pDeadband-4)-vTempLow[t]<=sTempInt[t])
-            @addConstraint(dre, (pSetpoint[t]+pDeadband)+vTempHigh[t]>=sTempInt[t])
-            @addConstraint(dre, vPowerHP[t]+vPowerAC[t]<=pMaxPower)
+        if pHP_Month[pMonth[t]]==false
             @addConstraint(dre, vPowerHP[t]==0)
-            @addConstraint(dre, sTempInt[t]>=20)
-        else
-            @addConstraint(dre, vPowerHP[t]==0)
+        end
+        if pAC_Month[pMonth[t]]==false
             @addConstraint(dre, vPowerAC[t]==0)
         end
+        @addConstraint(dre, ((pCOP*vPowerHP[t])/pCapacitance)-(((pCOP-1)*vPowerAC[t])/pCapacitance)==sIntGains[t])
+        @addConstraint(dre, ((pOutdoorTemp[t] - sTempInt[t])/(pCapacitance*pResistance))==sExtLosses[t])   #losses from thermal leakage
+        @addConstraint(dre, (pSetpoint[t]-pDeadband)-vTempLow[t]<=sTempInt[t])
+        @addConstraint(dre, (pSetpoint[t]+pDeadband)+vTempHigh[t]>=sTempInt[t])
+        @addConstraint(dre, vPowerHP[t]+vPowerAC[t]<=pMaxPower)
 
         @addConstraint(dre, ((pWH_AmbientTemp - sWH_TempInt[t])/(pWH_Capacitance*pWH_Resistance))==sWH_ExtLosses[t])
         @addConstraint(dre, ((pWH_COP*vPowerWH[t])/pWH_Capacitance)==sWH_IntGains[t])
@@ -321,7 +308,7 @@ function run_dr_dre(df1,df2,df3)
                 getValue(vScheduledLoads[1:T]),getValue(vPowerWH[1:T]),getValue(vPowerAC[1:T]),pNonControllableLoad[1:T],
                 getValue(EndUseLoads[1:T]), getValue(vBattPrimaryDownCap[1:T]),getValue(vBattPrimaryUpCap[1:T]),
                 getValue(sBattPrimaryUpEnergy[1:T]),getValue(sBattPrimaryDownEnergy[1:T]),getValue(sBattPrimaryEnergyLosses[1:T]),
-                md[1:T], getValue(vTotalTempDev[1:T]))
+                md[1:T], getValue(sWH_ExtLosses[1:T]))
 
 
     aUsage = convert(Array, aUsage)
@@ -331,7 +318,7 @@ function run_dr_dre(df1,df2,df3)
                 :x12=>:Set_point,:x13=>:Outdoor_temp,:x14=>:Indoor_temp,:x15=>:Battery_SOC,:x16=>:Battery_SOH,
                 :x17=>:HP_kW,:x18=>:Scheduled_Loads_kW,:x19=>:WH_kW,:x20=>:AC_kW,:x21=>:NonControllableLoads_kW,
                 :x22=>:EndUseLoads_kW,:x23=>:Primary_DownCap,:x24=>:Primary_UpCap,:x25=>:Primary_UpEnergy,:x26=>:Primary_DownEnergy,
-                :x27=>:Primary_EnergyLosses,:x28=>:Monthly_Peak_Demand,:x29=>:Temp_Deviations})
+                :x27=>:Primary_EnergyLosses,:x28=>:Monthly_Peak_Demand,:x29=>:WH_Losses})
 
     aCosts = [getValue(TotalCost),getValue(EnergyCost),getValue(NetworkCost),getValue(PeakDayCost),getValue(TotalRevenue),getValue(EnergyRevenue),getValue(PrimaryReserveRevenue),getValue(TempDevCost),getValue(CurtailCost)]
     names = ["Total_Cost","Energy_Cost","Network_Cost","Peak_Day_Cost","Total_Revenue","Energy_Revenue","Primary_Reserve_Revenue","Temp_Deviation_Cost","CurtailCost"]
