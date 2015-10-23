@@ -1,6 +1,6 @@
 #####################################################################
 #
-#    The Demand Responce and Distributed Resource Economics model
+#    The Demand Response and Distributed Resource Economics model
 #                             (DrDre)
 #
 #
